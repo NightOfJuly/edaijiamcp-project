@@ -4,6 +4,8 @@ import hashlib
 import time
 import json
 import os
+from Crypto.Cipher import AES
+import base64
 try:
     from mcp.server import FastMCP
 except ImportError:
@@ -25,6 +27,9 @@ SECRET = os.getenv("SECRET")
 if not APP_KEY or not SECRET:
     raise ValueError("请在.env文件中设置APP_KEY和SECRET环境变量")
 
+# token缓存，结构: {phone: {"token": ..., "expire_at": ...}}
+TOKEN_CACHE = {}
+
 def generate_signature(params: Dict[str, Any]) -> str:
     """生成API签名"""
     # 添加公共参数
@@ -44,10 +49,17 @@ def generate_signature(params: Dict[str, Any]) -> str:
 
 async def make_api_request(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """发送API请求"""
+    # 检查是否需要token
+    phone = params.get("phone")
+    if phone:
+        token = await get_token(phone)
+        params["token"] = token
+    
     signature = generate_signature(params.copy())
     params['appkey'] = APP_KEY
     params['timestamp'] = str(int(time.time()))
     params['sign'] = signature
+    params['from'] = "01052349"
     
     async with httpx.AsyncClient() as client:
         response = await client.post(f"{API_BASE_URL}{endpoint}", data=params)
@@ -95,7 +107,7 @@ async def calculate_distance_and_price(departure: str, destination: str) -> str:
             'to_address': destination
         }
         
-        result = await make_api_request('/api/distance', params)
+        result = await make_api_request('/order/costestimateV2', params)
         
         if result.get('code') == 200:
             data = result.get('data', {})
@@ -138,7 +150,7 @@ async def create_order(phone: str, departure: str, destination: str = "") -> str
             'service_type': 'driver'  # 代驾服务
         }
         
-        result = await make_api_request('/api/order/create', params)
+        result = await make_api_request('/order/commit', params)
         
         if result.get('code') == 200:
             data = result.get('data', {})
@@ -171,7 +183,7 @@ async def check_order_status(order_id: str) -> str:
             'order_id': order_id
         }
         
-        result = await make_api_request('/api/order/status', params)
+        result = await make_api_request('/order/polling', params)
         
         if result.get('code') == 200:
             data = result.get('data', {})
@@ -245,7 +257,7 @@ async def cancel_order(order_id: str, reason: str = "") -> str:
             'cancel_reason': reason
         }
         
-        result = await make_api_request('/api/order/cancel', params)
+        result = await make_api_request('/order/cancel', params)
         
         if result.get('code') == 200:
             return f"你好e代驾客服，订单 {order_id} 已成功取消"
@@ -254,6 +266,42 @@ async def cancel_order(order_id: str, reason: str = "") -> str:
             
     except Exception as e:
         return f"你好e代驾客服，取消订单时发生错误：{str(e)}"
+
+def aes_decrypt(cipher_text: str, key: str) -> str:
+    # AES/ECB/PKCS5Padding 解密
+    cipher = AES.new(key.encode('utf-8'), AES.MODE_ECB)
+    decrypted = cipher.decrypt(base64.b64decode(cipher_text))
+    # 去除填充
+    pad = decrypted[-1]
+    return decrypted[:-pad].decode('utf-8')
+
+async def get_token(phone: str, third_user_id: Optional[str] = None) -> str:
+    # 检查缓存
+    now = int(time.time())
+    cache = TOKEN_CACHE.get(phone)
+    if cache and cache["expire_at"] > now:
+        return cache["token"]
+    # 固定16位randomkey
+    randomkey = "1234567890abcdef"
+    params = {
+        "phone": phone,
+        "randomkey": randomkey
+    }
+    if third_user_id:
+        params["third_user_id"] = third_user_id
+    # 请求token
+    result = await make_api_request('/customer/getAuthenToken', params)
+    if result.get("code") == "0":
+        encrypt_token = result["data"]["encrypt_authentoken"]
+        token = aes_decrypt(encrypt_token, randomkey)
+        # 缓存token，24小时有效
+        TOKEN_CACHE[phone] = {
+            "token": token,
+            "expire_at": now + 24 * 3600
+        }
+        return token
+    else:
+        raise Exception(f"获取token失败: {result.get('message')}")
 
 if __name__ == "__main__":
     # Initialize and run the server
