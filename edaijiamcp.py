@@ -62,7 +62,7 @@ async def call_driver(phone: str, departure: str) -> str:
         departure: 出发地地址
     
     Returns:
-        提示信息，引导用户提供目的地以获取价格预估
+        直接创建订单的结果
     """
     if not phone or not departure:
         return "你好e代驾客服，请提供完整的手机号和出发地信息"
@@ -71,7 +71,8 @@ async def call_driver(phone: str, departure: str) -> str:
     if len(phone) != 11 or not phone.isdigit():
         return "你好e代驾客服，请输入正确的11位手机号"
     
-    return f"你好e代驾客服，已收到您的代驾需求：\n手机号：{phone}\n出发地：{departure}\n\n如需查看价格预估，请提供目的地地址。如需直接下单，请使用创建订单功能。"
+    # 直接创建订单
+    return await create_order(phone, departure)
 
 @mcp.tool()
 async def calculate_distance_and_price(departure: str, destination: str) -> str:
